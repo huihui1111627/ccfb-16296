@@ -16,3 +16,11 @@ node_modules/
 __pycache__/
 .venv/
 venv/
+
+# generated experiment artefacts
+out/*.npz
+out/export/
+web/data.json
+
+# tool caches
+.pytest_cache/

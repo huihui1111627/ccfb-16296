@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>红外相机网络 · 训练后权重量化观察台</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171c22;
+    --panel2: #1e242c;
+    --ink: #e6e9ee;
+    --muted: #8a94a3;
+    --line: #2a323c;
+    --accent: #5fb3ff;
+    --accent2: #ffb454;
+    --good: #66d19e;
+    --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", Inter, sans-serif; }
+  header { padding: 22px 28px 8px; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 12px 28px 60px; max-width: 1280px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; margin: 16px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--ink); }
+  .card .hint { color: var(--muted); font-size: 12px; margin: -4px 0 10px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .kpi { background: var(--panel2); border-radius: 8px; padding: 10px 12px; }
+  .kpi .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  .ctrl { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+  .ctrl label { color: var(--muted); }
+  select, button { background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+                   border-radius: 6px; padding: 6px 9px; font: inherit; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .grow { flex: 1 1 460px; min-width: 320px; }
+  canvas { display: block; width: 100%; background: var(--panel2); border-radius: 8px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+            margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+              margin-right: 5px; vertical-align: -1px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line);
+           font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .muted { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  code { background: #0b0e12; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .tab { padding: 5px 10px; border-radius: 6px; background: var(--panel2);
+         border: 1px solid var(--line); cursor: pointer; font-size: 12px; }
+  .tab.on { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>红外相机网络 · 训练后权重量化观察台</h1>
+  <div class="sub" id="subtitle">加载中…</div>
+</header>
+<main>
+
+<section class="row">
+  <div class="card grow">
+    <h3>整体结论</h3>
+    <div class="kpis" id="kpis"></div>
+    <div class="note" id="modelNote"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow">
+    <h3>不同比特数下的准确率</h3>
+    <div class="hint">同一份校准数据、同一组量化顺序；误差补偿(GPTQ) vs 直接四舍五入。虚线为浮点模型准确率。</div>
+    <canvas id="accCanvas" height="300"></canvas>
+    <div class="legend" id="accLegend"></div>
+  </div>
+  <div class="card grow">
+    <h3>整网 logits 误差</h3>
+    <div class="hint">量化后网络输出与浮点网络输出的逐元素均方误差（对数刻度）。</div>
+    <canvas id="mseCanvas" height="300"></canvas>
+    <div class="legend" id="mseLegend"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow">
+    <h3>每层量化前后的输出误差</h3>
+    <div class="hint">每层在校准输入上的输出均方误差：直接四舍五入 vs 误差补偿。柱高为误差，缩短比例越大说明补偿越有效。</div>
+    <div class="ctrl" style="margin-bottom:10px">
+      <label>比特</label><select id="layerBits"></select>
+      <label>网格</label><select id="layerSym"></select>
+      <label>指标</label><select id="layerMetric">
+        <option value="objective">层目标函数</option>
+        <option value="outmse">实际输出 MSE</option>
+      </select>
+    </div>
+    <canvas id="layerCanvas" height="320"></canvas>
+    <div class="legend" id="layerLegend"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow" style="flex-basis:100%">
+    <h3>逐列量化：误差被分摊到后面各列</h3>
+    <div class="hint">每一列被量化后，其舍入误差按统计矩阵的逆压到尚未量化的列上。下图显示这一过程随量化进行如何向后传递。</div>
+    <div class="ctrl" style="margin-bottom:10px">
+      <label>层</label><select id="waveLayer"></select>
+      <label>比特</label><select id="waveBits"></select>
+      <label>顺序</label><select id="waveOrder"></select>
+    </div>
+    <canvas id="waveCanvas" height="360"></canvas>
+    <div class="legend" id="waveLegend"></div>
+    <div class="note" id="waveNote"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow">
+    <h3>逐列误差曲线</h3>
+    <div class="hint">按量化顺序展示：每步的舍入误差、该列收到的累计补偿、以及每步引入的目标函数增量。</div>
+    <canvas id="colCanvas" height="300"></canvas>
+    <div class="legend" id="colLegend"></div>
+  </div>
+  <div class="card grow">
+    <h3>累计目标函数</h3>
+    <div class="hint">每步目标函数增量之和 = 最终层的输出误差目标。可对比补偿后的全程曲线。</div>
+    <canvas id="curveCanvas" height="300"></canvas>
+    <div class="legend" id="curveLegend"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow" style="flex-basis:100%">
+    <h3>各分组的缩放因子与零点</h3>
+    <div class="hint">每若干列共享一个缩放因子与零点，数值由组内权重的实际范围决定。横轴为组号。</div>
+    <div class="ctrl" style="margin-bottom:10px">
+      <label>层</label><select id="groupLayer"></select>
+      <label>比特</label><select id="groupBits"></select>
+    </div>
+    <canvas id="groupCanvas" height="300"></canvas>
+    <div class="legend" id="groupLegend"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow" style="flex-basis:100%">
+    <h3>量化顺序的影响</h3>
+    <div class="hint">按统计矩阵对角线排序（先量化影响大的列）vs 原始顺序 vs 随机顺序。</div>
+    <canvas id="orderCanvas" height="280"></canvas>
+    <div class="legend" id="orderLegend"></div>
+    <div class="note">“对角线顺序”按输入统计矩阵对角元从大到小排列；“随机顺序”使用固定种子。</div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow" style="flex-basis:100%">
+    <h3>逐层汇总</h3>
+    <div class="hint">4 比特、非对称、误差补偿。输出误差为相对浮点网络的逐层输出 MSE（整网串联后）。</div>
+    <div id="layerTable"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card grow" style="flex-basis:100%">
+    <h3>导出包</h3>
+    <div id="exportBox"></div>
+  </div>
+</section>
+
+</main>
+<script>
+// ---------- helpers ----------
+const $ = (s) => document.querySelector(s);
+const fmt = (x, d = 3) => (x === null || x === undefined || Number.isNaN(x)) ? "—"
+  : (Math.abs(x) >= 1e4 || (Math.abs(x) > 0 && Math.abs(x) < 1e-3)) ? x.toExponential(2) : x.toFixed(d);
+const COLORS = {
+  gptq: "#5fb3ff", rtn: "#ffb454", good: "#66d19e", bad: "#ff6b6b",
+  ink: "#e6e9ee", muted: "#8a94a3", line: "#2a323c", grid: "#242b34",
+  series: ["#5fb3ff", "#ffb454", "#66d19e", "#c792ea", "#ff8fab", "#7fd6d0"],
+};
+function setupCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = parseInt(cv.getAttribute("height"), 10);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+function axes(ctx, w, h, pad, xlab, ylab) {
+  ctx.strokeStyle = COLORS.line; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, h - pad.b); ctx.lineTo(w - pad.r, h - pad.b); ctx.stroke();
+  ctx.fillStyle = COLORS.muted; ctx.font = "11px sans-serif";
+  if (xlab) { ctx.textAlign = "right"; ctx.fillText(xlab, w - pad.r, h - pad.b + 26); }
+  if (ylab) { ctx.save(); ctx.translate(10, pad.t + 6); ctx.rotate(-Math.PI / 2); ctx.textAlign = "left"; ctx.fillText(ylab, 0, 0); ctx.restore(); }
+}
+function yscale(vals, log) {
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (!isFinite(lo) || !isFinite(hi)) { lo = 0; hi = 1; }
+  if (log) {
+    vals = vals.filter(v => v > 0);
+    lo = Math.min(...vals); hi = Math.max(...vals);
+    lo = Math.log10(lo); hi = Math.log10(hi);
+    if (hi - lo < 1e-9) { hi += 1; }
+    const span = hi - lo; lo -= span * 0.06; hi += span * 0.06;
+    return { lo, hi, f: (v) => Math.log10(Math.max(v, 1e-30)) };
+  }
+  if (hi - lo < 1e-12) { hi = lo + 1; }
+  const span = hi - lo; lo -= span * 0.08; hi += span * 0.08;
+  return { lo, hi, f: (v) => v };
+}
+function gridY(ctx, w, h, pad, sc, log, ticks = 5) {
+  ctx.strokeStyle = COLORS.grid; ctx.fillStyle = COLORS.muted; ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  for (let i = 0; i <= ticks; i++) {
+    const t = i / ticks;
+    const y = pad.t + (1 - t) * (h - pad.t - pad.b);
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+    const v = sc.lo + t * (sc.hi - sc.lo);
+    ctx.fillText(log ? "10^" + v.toFixed(1) : fmt(v, 2), pad.l - 6, y + 4);
+  }
+}
+function seriesLine(ctx, xs, ys, scx, scy, color, width = 2, dash = null) {
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = width;
+  if (dash) ctx.setLineDash(dash);
+  ctx.beginPath();
+  for (let i = 0; i < ys.length; i++) {
+    const x = scx(xs[i]), y = scy(ys[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke(); ctx.restore();
+}
+function dot(ctx, x, y, color, r = 3.5) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+function legend(el, items) {
+  el.innerHTML = items.map(([c, t, dash]) =>
+    `<span><i style="background:${c}${dash ? ";height:2px;vertical-align:5px" : ""}"></i>${t}</span>`).join("");
+}
+
+// ---------- load ----------
+let DATA = null;
+// data.json is written next to this page by scripts/run_experiments.py; the
+// ../out path covers serving the repository root instead.
+const SOURCES = ["data.json", "../out/experiments.json", "out/experiments.json"];
+(async () => {
+  let lastErr = null;
+  for (const src of SOURCES) {
+    try {
+      const r = await fetch(src, { cache: "no-store" });
+      if (!r.ok) { lastErr = new Error("HTTP " + r.status + " @ " + src); continue; }
+      DATA = await r.json();
+      init();
+      return;
+    } catch (e) { lastErr = e; }
+  }
+  $("#subtitle").textContent = "未能加载实验数据：" + (lastErr && lastErr.message) +
+    "（先运行 python scripts/run_experiments.py 生成 out/experiments.json）";
+})();
+
+function init() {
+  const m = DATA.meta;
+  $("#subtitle").textContent =
+    `${m.architecture} · ${m.n_train} 张训练图 / ${m.n_test} 张测试图 · 校准 ${m.calib_used} 张 · 随机种子 ${m.seed}`;
+  const steps = [kpis, accChart, mseChart, initLayerSelectors, layerChart,
+    initWaveSelectors, waveChart, colChart, curveChart, initGroupSelectors,
+    groupChart, orderChart, layerTable, exportBox];
+  for (const fn of steps) {
+    try { fn(); } catch (e) { console.error(fn.name, e); }
+  }
+}
+
+function mainLayer(bits, sym) {
+  const row = DATA.sweep.find(r => r.bits === bits && r.symmetric === sym);
+  return row || DATA.sweep.find(r => r.bits === 4 && !r.symmetric);
+}
+
+function kpis() {
+  const f = DATA.meta.accuracy.test;
+  const b4 = DATA.sweep.find(r => r.bits === 4 && !r.symmetric);
+  const b3 = DATA.sweep.find(r => r.bits === 3 && !r.symmetric);
+  const cards = [
+    ["浮点准确率", fmt(f * 100, 2) + "%", ""],
+    ["4bit GPTQ", fmt(b4.gptq.accuracy * 100, 2) + "%", (b4.gptq.accuracy - b4.rtn.accuracy >= 0 ? "+" : "") + ((b4.gptq.accuracy - b4.rtn.accuracy) * 100).toFixed(2) + " vs 四舍五入"],
+    ["3bit GPTQ", fmt(b3.gptq.accuracy * 100, 2) + "%", (b3.gptq.accuracy - b3.rtn.accuracy >= 0 ? "+" : "") + ((b3.gptq.accuracy - b3.rtn.accuracy) * 100).toFixed(2) + " vs 四舍五入"],
+    ["4bit logits MSE", fmt(b4.gptq.logits_mse, 4), "四舍五入 " + fmt(b4.rtn.logits_mse, 3)],
+    ["导出包", fmt(DATA.export.bytes / 1024, 1) + " KB", "浮点 " + fmt(DATA.export.float_bytes / 1024, 1) + " KB"],
+  ];
+  $("#kpis").innerHTML = cards.map(([l, v, h]) =>
+    `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="l">${h}</div></div>`).join("");
+  $("#modelNote").innerHTML =
+    `训练曲线：${DATA.meta.history.length} 轮，末轮训练准确率 ${fmt(DATA.meta.history.at(-1).train_acc * 100, 1)}%。` +
+    `量化前先归一化（均值 ${fmt(DATA.meta.norm_mean, 4)}，标准差 ${fmt(DATA.meta.norm_std, 4)}）。`;
+}
+
+function accChart() {
+  const { ctx, w, h } = setupCanvas($("#accCanvas"));
+  const pad = { l: 46, t: 16, r: 18, b: 34 };
+  const bits = DATA.meta.bits_list;
+  const f = DATA.meta.accuracy.test;
+  const series = [
+    { key: "gptq", label: "GPTQ 误差补偿", color: COLORS.gptq },
+    { key: "rtn", label: "直接四舍五入", color: COLORS.rtn },
+  ];
+  const groups = [];
+  for (const sym of [false, true]) {
+    const rows = bits.map(b => DATA.sweep.find(r => r.bits === b && r.symmetric === sym));
+    groups.push({ sym, rows });
+  }
+  // accuracy axes must include every bar; starting at 0 would flatten the
+  // differences, so pad below the minimum instead of clipping
+  const allVals = [f];
+  DATA.sweep.forEach(r => { allVals.push(r.gptq.accuracy, r.rtn.accuracy); });
+  const lo = Math.min(...allVals), hi = Math.max(...allVals);
+  const span = Math.max(hi - lo, 0.01);
+  const sc = { lo: lo - span * 0.15, hi: hi + span * 0.15, f: (v) => v };
+  const y = (v) => pad.t + (1 - (v - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, { lo: sc.lo, hi: sc.hi }, false);
+  const nX = groups.length * bits.length;
+  const slot = (w - pad.l - pad.r) / nX;
+  let xi = 0;
+  const xs = [];
+  for (const g of groups) {
+    for (let i = 0; i < bits.length; i++) {
+      const cxs = pad.l + slot * (xi + 0.5);
+      xs.push(cxs);
+      const row = g.rows[i];
+      series.forEach((s, si) => {
+        const v = row[s.key].accuracy;
+        const bw = slot * 0.30;
+        const x0 = cxs - slot * 0.32 + si * slot * 0.36;
+        ctx.fillStyle = s.color;
+        ctx.fillRect(x0, y(v), bw, h - pad.b - y(v));
+        ctx.fillStyle = COLORS.ink; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText((v * 100).toFixed(2), x0 + bw / 2, y(v) - 5);
+      });
+      ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+      ctx.fillText(bits[i] + "bit", cxs, h - pad.b + 16);
+      xi++;
+    }
+  }
+  const yf = y(f);
+  ctx.save(); ctx.strokeStyle = COLORS.good; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(pad.l, yf); ctx.lineTo(w - pad.r, yf); ctx.stroke(); ctx.restore();
+  ctx.fillStyle = COLORS.good; ctx.textAlign = "right"; ctx.font = "11px sans-serif";
+  ctx.fillText("浮点 " + (f * 100).toFixed(2) + "%", w - pad.r - 4, yf - 5);
+  // group labels
+  ctx.fillStyle = COLORS.muted; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+  groups.forEach((g, gi) => {
+    const a = pad.l + slot * gi * bits.length, b = a + slot * bits.length;
+    ctx.fillText(g.sym ? "对称网格" : "非对称网格", (a + b) / 2, h - 4);
+  });
+  axes(ctx, w, h, pad, "", "准确率");
+  legend($("#accLegend"), series.map(s => [s.color, s.label]).concat([[COLORS.good, "浮点", true]]));
+}
+
+function mseChart() {
+  const { ctx, w, h } = setupCanvas($("#mseCanvas"));
+  const pad = { l: 52, t: 16, r: 18, b: 34 };
+  const bits = DATA.meta.bits_list;
+  const series = [
+    { key: "gptq", label: "GPTQ", color: COLORS.gptq },
+    { key: "rtn", label: "四舍五入", color: COLORS.rtn },
+  ];
+  const rows = bits.map(b => DATA.sweep.find(r => r.bits === b && !r.symmetric));
+  const vals = rows.map(r => r.gptq.logits_mse).concat(rows.map(r => r.rtn.logits_mse));
+  const sc = yscale(vals, true);
+  const x = (i) => pad.l + (bits.length === 1 ? 0.5 : i / (bits.length - 1)) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (sc.f(v) - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc, true);
+  series.forEach(s => {
+    seriesLine(ctx, bits.map((_, i) => i), rows.map(r => r[s.key].logits_mse), x, y, s.color, 2.2);
+    rows.forEach((r, i) => dot(ctx, x(i), y(r[s.key].logits_mse), s.color));
+  });
+  ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+  bits.forEach((b, i) => ctx.fillText(b + "bit", x(i), h - pad.b + 16));
+  axes(ctx, w, h, pad, "", "MSE (log)");
+  legend($("#mseLegend"), series.map(s => [s.color, s.label]));
+}
+
+// ---------- layer selectors ----------
+function initLayerSelectors() {
+  const sel = $("#layerBits");
+  sel.innerHTML = DATA.meta.bits_list.map(b => `<option value="${b}">${b} bit</option>`).join("");
+  sel.value = "4";
+  $("#layerSym").innerHTML = `<option value="0">非对称</option><option value="1">对称</option>`;
+  sel.onchange = layerChart; $("#layerSym").onchange = layerChart; $("#layerMetric").onchange = layerChart;
+}
+
+function layerChart() {
+  const bits = +$("#layerBits").value, sym = $("#layerSym").value === "1";
+  const metric = $("#layerMetric").value;
+  const src = DATA.sweep.find(r => r.bits === bits && r.symmetric === sym) || mainLayer(4, false);
+  const layers = src.gptq.layers;
+  const { ctx, w, h } = setupCanvas($("#layerCanvas"));
+  const pad = { l: 58, t: 16, r: 18, b: 40 };
+  const key = metric === "objective" ? ["loss_plain", "loss_compensated"] : ["out_mse_plain", "out_mse_compensated"];
+  const vals = [];
+  layers.forEach(l => { vals.push(l[key[0]], l[key[1]]); });
+  const sc = yscale(vals.filter(v => v > 0), true);
+  const y = (v) => pad.t + (1 - (sc.f(v) - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc, true);
+  const slot = (w - pad.l - pad.r) / layers.length;
+  layers.forEach((l, i) => {
+    const cx = pad.l + slot * (i + 0.6);
+    const bw = slot * 0.26;
+    ctx.fillStyle = COLORS.rtn; ctx.fillRect(cx - bw - 2, y(l[key[0]]), bw, h - pad.b - y(l[key[0]]));
+    ctx.fillStyle = COLORS.gptq; ctx.fillRect(cx + 2, y(l[key[1]]), bw, h - pad.b - y(l[key[1]]));
+    ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+    ctx.fillText(l.name, cx, h - pad.b + 15);
+    const gain = l[key[0]] / Math.max(l[key[1]], 1e-30);
+    ctx.fillStyle = COLORS.good; ctx.font = "10px sans-serif";
+    ctx.fillText("↓" + gain.toFixed(1) + "×", cx, h - pad.b + 29);
+  });
+  axes(ctx, w, h, pad, "", "MSE (log)");
+  legend($("#layerLegend"), [[COLORS.rtn, "四舍五入"], [COLORS.gptq, "误差补偿"]]);
+}
+
+// ---------- wave ----------
+function initWaveSelectors() {
+  const layers = DATA.main.layers.map(l => l.name);
+  $("#waveLayer").innerHTML = layers.map(n => `<option>${n}</option>`).join("");
+  $("#waveBits").innerHTML = DATA.meta.bits_list.map(b => `<option ${b === 4 ? "selected" : ""}>${b}</option>`).join("");
+  $("#waveOrder").innerHTML = DATA.orders.map(o => `<option value="${o.mode}">${orderName(o.mode)}</option>`).join("");
+  $("#waveLayer").onchange = waveChart; $("#waveBits").onchange = waveChart; $("#waveOrder").onchange = waveChart;
+}
+function orderName(m) { return m === "identity" ? "原始顺序" : m === "diag" ? "对角线顺序" : "随机顺序"; }
+
+function traceLayers(bits, mode) {
+  // detailed traces exist for the main config (4bit, identity) and for the
+  // diag/random order runs at the same bit width
+  if (bits === DATA.main.config.bits && mode === DATA.main.config.order_mode) return DATA.main.layers;
+  const t = DATA.order_traces && DATA.order_traces[mode];
+  if (bits === DATA.main.config.bits && t) return t;
+  return null;
+}
+function pickTrace(name, bits, mode) {
+  const layers = traceLayers(bits, mode);
+  if (layers) {
+    const l = layers.find(x => x.name === name && x.wave && x.wave.length);
+    if (l) return l;
+  }
+  // fall back to the sweep summary (no wave / per-column data)
+  const row = DATA.sweep.find(r => r.bits === bits && !r.symmetric);
+  const l = row && row.gptq.layers.find(x => x.name === name);
+  return l || DATA.main.layers.find(x => x.name === name);
+}
+function hasTrace(l) { return l && l.inc_loss && l.inc_loss.length; }
+
+function waveChart() {
+  const name = $("#waveLayer").value, bits = +$("#waveBits").value, mode = $("#waveOrder").value;
+  const l = pickTrace(name, bits, mode);
+  const { ctx, w, h } = setupCanvas($("#waveCanvas"));
+  const pad = { l: 58, t: 16, r: 74, b: 40 };
+  const wave = (l && l.wave) || [];
+  const steps = wave.length;
+  const ncols = wave.length ? wave[0].length : 1;
+  if (!wave.length) {
+    ctx.fillStyle = COLORS.muted; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("该比特数只记录了汇总数据；逐列补偿矩阵在 4bit 下完整记录", w / 2, h / 2);
+    $("#waveNote").textContent = "切换到 4 bit 查看逐列补偿矩阵。";
+    $("#waveLegend").innerHTML = "";
+    return;
+  }
+  let maxv = 0;
+  for (const row of wave) for (const v of row) maxv = Math.max(maxv, v);
+  const iw = (w - pad.l - pad.r) / ncols, ih = (h - pad.t - pad.b) / steps;
+  for (let i = 0; i < steps; i++) {
+    for (let j = 0; j < ncols; j++) {
+      const v = wave[i][j];
+      if (v <= 0) continue;
+      const t = Math.min(1, Math.pow(v / maxv, 0.5));
+      const r = Math.round(20 + t * 235), g = Math.round(40 + t * 120), b = Math.round(60 + t * 40);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(pad.l + j * iw, pad.t + i * ih, Math.max(1, iw + 0.5), Math.max(1, ih + 0.5));
+    }
+  }
+  ctx.strokeStyle = COLORS.line; ctx.strokeRect(pad.l, pad.t, w - pad.l - pad.r, h - pad.t - pad.b);
+  ctx.fillStyle = COLORS.muted; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("列（量化顺序位置 →）", (pad.l + w - pad.r) / 2, h - pad.b + 28);
+  ctx.save(); ctx.translate(14, (pad.t + h - pad.b) / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center"; ctx.fillText("量化步（自上而下）", 0, 0); ctx.restore();
+  // colour bar
+  const bx = w - pad.r + 18, by = pad.t, bh = h - pad.t - pad.b;
+  const grad = ctx.createLinearGradient(0, pad.t + bh, 0, pad.t);
+  grad.addColorStop(0, "rgb(20,40,60)"); grad.addColorStop(1, "rgb(255,160,100)");
+  ctx.fillStyle = grad; ctx.fillRect(bx, by, 12, bh);
+  ctx.fillStyle = COLORS.muted; ctx.textAlign = "left"; ctx.font = "10px sans-serif";
+  ctx.fillText(fmt(maxv, 3), bx + 16, by + 8);
+  ctx.fillText("0", bx + 16, by + bh);
+  $("#waveNote").textContent =
+    `${l.name}：${l.n_rows}×${l.n_cols}，组大小 ${l.group_size}，顺序 ${orderName(mode)}。` +
+    `已量化的列不会再收到补偿，所以亮区只出现在对角线右侧，误差被推给尚未量化的列。` +
+    `每行亮度是该步压到各列的修正量 RMS（显示时按块平均到 ${ncols}×${steps} 像素）。`;
+  legend($("#waveLegend"), [[COLORS.series[0], "列修正量（亮 = 大）"]]);
+}
+
+// ---------- per-column curves ----------
+function colChart() {
+  colChartFor(window.__colLayer || DATA.main.layers.find(x => x.name === "fc1") || DATA.main.layers[0]);
+}
+
+function colChartFor(l) {
+  const { ctx, w, h } = setupCanvas($("#colCanvas"));
+  if (!hasTrace(l)) return;
+  const pad = { l: 58, t: 16, r: 18, b: 40 };
+  const n = l.inc_loss.length;
+  const perRow = Math.max(l.n_rows, 1);
+  const xs = Array.from({ length: n }, (_, i) => i);
+  // all three are per-output-row RMS weight errors, so they are comparable
+  const roundRms = l.rounding_err.map(v => v / Math.sqrt(perRow));
+  const recvRms = l.received_correction.map(v => v / Math.sqrt(perRow));
+  const finalRms = l.final_err_by_col.map(v => Math.sqrt(v / perRow));
+  const all = roundRms.concat(recvRms, finalRms).filter(v => v > 0);
+  const sc = yscale(all, true);
+  const x = (i) => pad.l + (i / Math.max(n - 1, 1)) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (sc.f(v) - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc, true);
+  // shade where the column was already fixed (rounding error stays, no more
+  // compensation can reach it) -- shows the tail of the order
+  seriesLine(ctx, xs, roundRms, x, y, COLORS.rtn, 1.4);
+  seriesLine(ctx, xs, recvRms, x, y, COLORS.series[3], 1.4);
+  seriesLine(ctx, xs, finalRms, x, y, COLORS.gptq, 1.4);
+  ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+  ctx.fillText(`量化步（顺序位置，共 ${n} 列）`, (pad.l + w - pad.r) / 2, h - 6);
+  axes(ctx, w, h, pad, "", "每行 RMS 误差 (log)");
+  legend($("#colLegend"), [
+    [COLORS.rtn, "舍入误差（量化瞬间）"],
+    [COLORS.series[3], "收到的累计补偿"],
+    [COLORS.gptq, "该列最终误差"],
+  ]);
+}
+
+function setColLayer(name) {
+  const l = DATA.main.layers.find(x => x.name === name && hasTrace(x));
+  if (l) { window.__colLayer = l; colChartFor(l); }
+}
+
+function curveChart() {
+  const { ctx, w, h } = setupCanvas($("#curveCanvas"));
+  const pad = { l: 62, t: 16, r: 18, b: 38 };
+  const series = DATA.main.layers.slice(0, 5).map((l, i) => ({ l, c: COLORS.series[i % COLORS.series.length] }));
+  const all = [];
+  series.forEach(s => { all.push(...s.l.objective_curve.filter(v => v > 0)); all.push(s.l.loss_plain, s.l.loss_compensated); });
+  const sc = yscale(all, true);
+  const x = (i, n) => pad.l + (i / Math.max(n - 1, 1)) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (sc.f(v) - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc, true);
+  series.forEach(s => {
+    const n = s.l.objective_curve.length;
+    seriesLine(ctx, Array.from({ length: n }, (_, i) => i), s.l.objective_curve, (i) => x(i, n), y, s.c, 2);
+    ctx.save(); ctx.strokeStyle = s.c; ctx.setLineDash([3, 4]); ctx.globalAlpha = .6;
+    ctx.beginPath(); ctx.moveTo(pad.l, y(s.l.loss_plain)); ctx.lineTo(w - pad.r, y(s.l.loss_plain)); ctx.stroke(); ctx.restore();
+  });
+  ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+  ctx.fillText("量化步（每层按自身列数归一化）", (pad.l + w - pad.r) / 2, h - 6);
+  axes(ctx, w, h, pad, "", "累计目标 (log)");
+  legend($("#curveLegend"), series.map(s => [s.c, s.l.name]).concat([[COLORS.muted, "虚线 = 四舍五入终值"]]));
+}
+
+// ---------- groups ----------
+function initGroupSelectors() {
+  const layers = DATA.main.layers.map(l => l.name);
+  $("#groupLayer").innerHTML = layers.map(n => `<option ${n === "fc1" ? "selected" : ""}>${n}</option>`).join("");
+  $("#groupBits").innerHTML = DATA.meta.bits_list.map(b => `<option ${b === 4 ? "selected" : ""}>${b}</option>`).join("");
+  $("#groupLayer").onchange = groupChart; $("#groupBits").onchange = groupChart;
+}
+function pickLayer(name, bits) {
+  const row = DATA.sweep.find(r => r.bits === bits && !r.symmetric);
+  return (row?.gptq.layers || []).find(l => l.name === name) || DATA.main.layers.find(l => l.name === name);
+}
+function groupChart() {
+  const name = $("#groupLayer").value, bits = +$("#groupBits").value;
+  const l = pickLayer(name, bits);
+  const { ctx, w, h } = setupCanvas($("#groupCanvas"));
+  const pad = { l: 62, t: 16, r: 62, b: 38 };
+  // scale/zero are stored for up to 4 output rows x n_groups
+  const rows = l.scale;
+  const n = rows[0].length;
+  const mean = Array.from({ length: n }, (_, i) => rows.reduce((a, r) => a + r[i], 0) / rows.length);
+  const zrow = l.zero[0];
+  const x = (i) => pad.l + (i / Math.max(n - 1, 1)) * (w - pad.l - pad.r);
+  const allScale = rows.flat().filter(v => v > 0);
+  const sc1 = yscale(allScale, true);
+  const y1 = (v) => pad.t + (1 - (sc1.f(v) - sc1.lo) / (sc1.hi - sc1.lo)) * (h - pad.t - pad.b);
+  const zmax = Math.max(1, ...zrow), zmin = Math.min(...zrow);
+  const y2 = (v) => h - pad.b - ((v - zmin) / Math.max(zmax - zmin, 1)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc1, true);
+  rows.forEach((r, ri) => {
+    seriesLine(ctx, Array.from({ length: n }, (_, i) => i), r, x, y1, COLORS.gptq, 1);
+  });
+  seriesLine(ctx, Array.from({ length: n }, (_, i) => i), mean, x, y1, COLORS.ink, 2.2);
+  seriesLine(ctx, Array.from({ length: n }, (_, i) => i), zrow, x, y2, COLORS.rtn, 2, [4, 3]);
+  ctx.fillStyle = COLORS.rtn; ctx.textAlign = "left"; ctx.font = "11px sans-serif";
+  ctx.fillText("零点 " + zmin + "…" + zmax, w - pad.r + 6, pad.t + 8);
+  ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+  ctx.fillText("组号（每组 " + l.group_size + " 列，共 " + l.n_groups + " 组）", (pad.l + w - pad.r) / 2, h - 6);
+  axes(ctx, w, h, pad, "", "缩放因子 (log)");
+  legend($("#groupLegend"), [
+    [COLORS.gptq, `各输出行（显示前 ${rows.length} 行）`],
+    [COLORS.ink, "平均"],
+    [COLORS.rtn, "零点（右轴）"],
+  ]);
+}
+
+// ---------- order ----------
+function orderChart() {
+  const { ctx, w, h } = setupCanvas($("#orderCanvas"));
+  const pad = { l: 58, t: 16, r: 18, b: 38 };
+  const orders = DATA.orders;
+  const nLayers = DATA.main.layers.length;
+  const names = DATA.main.layers.map(l => l.name);
+  const vals = [];
+  orders.forEach(o => o.layers.forEach(l => vals.push(l.loss_compensated, l.loss_plain)));
+  const sc = yscale(vals.filter(v => v > 0), true);
+  const y = (v) => pad.t + (1 - (sc.f(v) - sc.lo) / (sc.hi - sc.lo)) * (h - pad.t - pad.b);
+  gridY(ctx, w, h, pad, sc, true);
+  const slot = (w - pad.l - pad.r) / nLayers;
+  names.forEach((nm, i) => {
+    const cx = pad.l + slot * (i + 0.5);
+    const bw = slot * 0.22;
+    orders.forEach((o, oi) => {
+      const l = o.layers.find(x => x.name === nm);
+      if (!l) return;
+      ctx.fillStyle = COLORS.series[oi];
+      const x0 = cx - slot * 0.36 + oi * slot * 0.25;
+      ctx.fillRect(x0, y(l.loss_compensated), bw, h - pad.b - y(l.loss_compensated));
+      if (oi === 0) {
+        ctx.save(); ctx.strokeStyle = COLORS.rtn; ctx.setLineDash([3, 3]); ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(cx - slot * 0.45, y(l.loss_plain));
+        ctx.lineTo(cx + slot * 0.45, y(l.loss_plain)); ctx.stroke(); ctx.restore();
+      }
+    });
+    ctx.fillStyle = COLORS.muted; ctx.textAlign = "center"; ctx.font = "11px sans-serif";
+    ctx.fillText(nm, cx, h - pad.b + 15);
+  });
+  axes(ctx, w, h, pad, "", "层目标 (log)");
+  legend($("#orderLegend"), orders.map((o, i) => [COLORS.series[i], orderName(o.mode) + ` (acc ${(o.accuracy * 100).toFixed(2)}%)`])
+    .concat([[COLORS.rtn, "四舍五入参考", true]]));
+}
+
+// ---------- table ----------
+function layerTable() {
+  const L = DATA.main.layers;
+  let html = `<table><thead><tr>
+    <th>层</th><th>权重形状</th><th>列数</th><th>比特</th><th>组大小</th>
+    <th>四舍五入目标</th><th>补偿后目标</th><th>倍数</th><th>串联输出误差</th></tr></thead><tbody>`;
+  for (const l of L) {
+    const ratio = l.loss_plain / Math.max(l.loss_compensated, 1e-30);
+    html += `<tr><td>${l.name}</td><td>${l.shape.join("×")}</td><td>${l.n_cols}</td><td>${l.bits}</td><td>${l.group_size}</td>
+      <td>${fmt(l.loss_plain, 4)}</td><td>${fmt(l.loss_compensated, 4)}</td>
+      <td class="good">${ratio.toFixed(2)}×</td><td>${fmt(l.out_err_stacked, 4)}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  $("#layerTable").innerHTML = html;
+}
+
+function exportBox() {
+  const e = DATA.export;
+  const m = e.manifest;
+  let html = `<div class="kpis">
+    <div class="kpi"><div class="l">打包文件</div><div class="v">${fmt(e.bytes / 1024, 1)} KB</div><div class="l">${e.path}</div></div>
+    <div class="kpi"><div class="l">浮点权重</div><div class="v">${fmt(e.float_bytes / 1024, 1)} KB</div><div class="l">fp32 参数</div></div>
+    <div class="kpi"><div class="l">压缩比</div><div class="v">${(e.float_bytes / e.bytes).toFixed(1)}×</div><div class="l">含元数据与缩放的 zip</div></div>
+    <div class="kpi"><div class="l">推理一致性</div><div class="v good">逐元素</div><div class="l">见 tests/test_export.py</div></div>
+  </div>`;
+  html += `<table style="margin-top:12px"><thead><tr><th>层</th><th>类型</th><th>权重形状</th><th>比特</th><th>组大小</th><th>组数</th><th>打包字节</th></tr></thead><tbody>`;
+  for (const op of m.ops) {
+    if (!op.name) continue;
+    html += `<tr><td>${op.name}</td><td>${op.op}</td><td>${op.weight_shape.join("×")}</td><td>${op.bits}</td>
+      <td>${op.group_size}</td><td>${op.n_groups}</td><td>${op.packed_bytes}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  html += `<div class="note">包内含 <code>&lt;name&gt;.codes</code>（位打包整数码）、<code>scale</code>/<code>zero</code>（每组缩放与零点）、
+    <code>bias</code> 与 <code>manifest</code>。同目录的 <code>infer.py</code> 只依赖 numpy，反量化表达式与模拟器完全一致，
+    因此 <code>infer.forward(...)</code> 的输出和量化后的浮点模拟逐元素相同。</div>`;
+  $("#exportBox").innerHTML = html;
+}
+
+window.addEventListener("resize", () => { if (DATA) init(); });
+</script>
+</body>
+</html>
